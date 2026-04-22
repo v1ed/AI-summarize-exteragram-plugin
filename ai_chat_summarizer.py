@@ -1,11 +1,10 @@
-from typing import Any, List, Literal, Optional, Callable
-from collections import defaultdict
+from typing import Literal, Optional, Callable
 import datetime
 import requests
-import urllib.parse
 import traceback
 import json
 import threading
+import re
 
 from base_plugin import BasePlugin, MenuItemData, MenuItemType
 from ui.settings import Header, Divider, Input, EditText, Switch, Selector, Text, Custom, SimpleSettingFactory
@@ -54,64 +53,225 @@ DEFAULT_SYSTEM_PROMPTS_LINK = ""
 DEFAULT_REQ_MAX_MSG = 300
 DEFAULT_CHARACTERS_URL = "https://raw.githubusercontent.com/v1ed/AI-summarize-exteragram-plugin/main/characters.json"
 SUMMARY_FACTCHECK_PROMPT = """
-Ты — профессиональный аналитик текстовой переписки Telegram. Твоя задача — проанализировать предоставленный транскрипт чата.
-Анализируй только текст сообщений, полностью игнорируй системные сообщения о добавлении картинок, файлов и других вложений.
-ОБЯЗАТЕЛЬНО обращай внимание на контекст (личные сообщения, группа или канал) и имена авторов сообщений. Ты должен четко понимать, кто, кому и что именно говорит, кто выдвигает какие тезисы и как на них реагируют другие участники.
+Ты — профессиональный аналитик текстовой переписки Telegram.
 
-СТРУКТУРА ОТВЕТА:
+ЗАДАЧА:
+Проанализировать транскрипт чата и выдать структурированный результат с кратким содержанием, ключевыми тезисами и проверкой фактов.
 
-## 📝 Краткое содержание
-Опиши основную тему обсуждения, вектор развития разговора и к какому итогу пришли участники.
+ОГРАНИЧЕНИЯ:
+- Анализируй ТОЛЬКО текст сообщений.
+- Полностью игнорируй системные сообщения и любые упоминания вложений (файлы, фото, стикеры и т.д.).
+- НЕ додумывай факты, которых нет в тексте.
+- НЕ используй внешние знания при проверке фактов — опирайся только на содержимое переписки.
+- Если данных недостаточно — явно укажи это.
+- Учитывай контекст (личный чат, группа, канал).
+- Обязательно отслеживай авторов сообщений и связи "кто → кому → что".
 
-## 🎯 Ключевые тезисы
-Сформируй структурированный маркерный (bullet) список главных утверждений, договорённостей, идей и решений. Обязательно указывай авторов, если в беседе участвует больше одного человека.
+ФОРМАТ ОТВЕТА (строго соблюдай):
 
-## 🔍 Проверка фактов
-Найди в тексте утверждения, которые подаются как объективные факты. Для каждого проверяемого утверждения:
+*Краткое содержание*
+Кратко опиши:
+- основную тему
+- развитие диалога
+- итог (если есть)
+
+*Ключевые тезисы*
+- Указывай ключевые мысли, решения и аргументы
+- Для каждого пункта указывай автора (если их несколько)
+- Формат строго через "-" (без нумерации)
+
+*Проверка фактов*
+Найди утверждения, которые подаются как факты.
+
+Для каждого:
 - Утверждение: "..."
-- Статус: [Подтверждено в беседе / Сомнительно / Не подтверждено / Требует внешней проверки]
-- Комментарий: кратко объясни причину такого статуса на основе текста.
-Если проверяемых фактов в тексте нет — напиши об этом явно.
+- Статус: Подтверждено в беседе / Сомнительно / Не подтверждено / Требует внешней проверки
+- Комментарий: краткое объяснение, строго на основе текста
 
-Отвечай на том же языке, на котором ведется переписка.
+Если фактов нет:
+- Явных фактических утверждений не обнаружено
+
+ЯЗЫК:
+- Используй тот же язык, что и в переписке
+
+ФОРМАТИРОВАНИЕ TELEGRAM:
+- Используй только допустимую разметку Telegram:
+  *жирный*, _курсив_, `моноширинный`
+- Заголовки оформляй через *жирный текст*, НЕ используй "#"
+- Списки только через "-"
 """
 SUMMARY_PROMPT = """
-Ты — профессиональный аналитик текстовой переписки Telegram. Твоя задача — сделать качественную выжимку предоставленного транскрипта чата.
-Анализируй только текст сообщений, полностью игнорируй картинки, файлы и другие вложений.
-Учитывай источник и имена авторов, чтобы правильно передать динамику диалога.
+Ты — профессиональный аналитик текстовой переписки Telegram.
 
-СТРУКТУРА ОТВЕТА:
+ЗАДАЧА:
+Сделать точную и сжатую выжимку предоставленного транскрипта чата.
 
-## 📝 Краткое содержание
-Опиши основную тему обсуждения, ход разговора и итоговый результат.
+ОГРАНИЧЕНИЯ:
+- Анализируй только текст сообщений
+- Игнорируй вложения и системные события
+- Не добавляй информацию, которой нет в переписке
+- Учитывай авторов и структуру диалога
+- Передавай причинно-следственные связи и реакцию участников
 
-## 🎯 Ключевые тезисы
-Сформируй маркерный список главных мыслей, аргументов, договорённостей и решений. Обязательно указывай авторов конкретных идей.
+ФОРМАТ ОТВЕТА:
 
-Отвечай на том же языке, на котором ведется переписка.
+*Краткое содержание*
+- Основная тема
+- Ход обсуждения
+- Итог
+
+*Ключевые тезисы*
+- Основные идеи, аргументы и решения
+- Указывай авторов
+- Используй только "-" для списка
+
+ЯЗЫК:
+- Совпадает с языком переписки
+
+ФОРМАТ TELEGRAM:
+- Только допустимая разметка:
+  *жирный*, _курсив_, `моноширинный`
+- Заголовки через *жирный*
+- Без "#", без HTML
 """
 FACTCHECK_PROMPT = """
-Ты — строгий и беспристрастный факт-чекер. Твоя задача — проанализировать предоставленный транскрипт Telegram-чата исключительно на предмет достоверности озвучиваемых данных.
-Анализируй только текст сообщений, игнорируй вложения. НЕ делай общую суммаризацию разговора. Ищи только те утверждения, которые преподносятся как объективные факты.
+Ты — строгий и беспристрастный факт-чекер Telegram-переписки.
 
-Для каждого найденного утверждения выведи:
-- Утверждение: "..." (с указанием автора)
-- Статус: [Внутренне непротиворечиво / Сомнительно / Искажено / Требует фактчека в интернете]
-- Комментарий: краткое обоснование статуса.
+ЗАДАЧА:
+Выделить и оценить достоверность фактических утверждений в чате.
 
-Если в тексте нет явных фактических утверждений — напиши об этом явно.
-Отвечай на языке переписки.
+ОГРАНИЧЕНИЯ:
+- НЕ делай суммаризацию
+- Анализируй только текст сообщений
+- Игнорируй вложения и системные события
+- НЕ используй внешние знания
+- Оценивай только внутреннюю логичность и подтверждение в рамках переписки
+- Не интерпретируй мнения как факты
+
+ЧТО СЧИТАТЬ ФАКТОМ:
+- Утверждения о событиях, данных, числах, причинно-следственных связях
+- НЕ учитывать мнения, предположения, эмоции
+
+ФОРМАТ ОТВЕТА:
+
+Для каждого утверждения:
+- Утверждение: "..." (автор: ...)
+- Статус: Внутренне непротиворечиво / Сомнительно / Искажено / Требует проверки вне чата
+- Комментарий: краткое обоснование
+
+Если фактов нет:
+- Явных фактических утверждений не обнаружено
+
+ЯЗЫК:
+- Совпадает с языком переписки
+
+ФОРМАТ TELEGRAM:
+- Используй только:
+  *жирный*, _курсив_, `моноширинный`
+- Заголовки через *жирный*
+- Списки через "-"
 """
 _DETAIL_LEVELS = [
     """
 ИНСТРУКЦИЯ ПО ДЕТАЛИЗАЦИИ: [КРАТКО]
-Сделай максимально сжатую и лаконичную выжимку. Умести смысл в 2-4 предложениях и 3-4 главных буллитах. Игнорируй второстепенные детали и оставь только суть и финальные итоги.""",
+
+ЗАДАЧА:
+Сформировать максимально сжатую выжимку без потери ключевого смысла.
+
+ТРЕБОВАНИЯ:
+- Итог: 2–4 предложения в блоке "Краткое содержание"
+- 3–4 пункта в "Ключевые тезисы"
+- Только основные идеи, решения и итог
+- Полностью убрать детали, примеры, уточнения и повторения
+- Игнорировать второстепенные реплики и ответвления диалога
+- Не описывать процесс обсуждения — только результат и суть
+
+ОГРАНИЧЕНИЯ:
+- Не добавляй новую информацию
+- Не интерпретируй сверх текста
+- Если итог неочевиден — прямо укажи это
+
+ФОРМАТ:
+- Строго соблюдать структуру основного промпта
+- Списки только через "-"
+- Без нумерации
+
+ФОРМАТ TELEGRAM:
+- Только допустимая разметка:
+  *жирный*, _курсив_, `моноширинный`
+- Заголовки через *жирный*
+""",
+
     """
 ИНСТРУКЦИЯ ПО ДЕТАЛИЗАЦИИ: [НОРМАЛЬНО]
-Сделай сбалансированную выжимку. Отрази контекст, основные темы, ключевые аргументы сторон и итог обсуждения. Убери информационный шум, но сохрани логику диалога.""",
+
+ЗАДАЧА:
+Сделать сбалансированную выжимку с сохранением логики диалога.
+
+ТРЕБОВАНИЯ:
+- Отразить:
+  - контекст общения
+  - ключевые темы
+  - аргументы участников
+  - развитие обсуждения
+  - итог (если есть)
+- Сохранять причинно-следственные связи
+- Указывать авторов ключевых тезисов
+- Удалять шум (повторы, оффтоп, несущественные детали)
+
+ОГРАНИЧЕНИЯ:
+- Не добавляй факты вне текста
+- Не делай избыточных обобщений
+- Не теряй важные смысловые переходы
+
+ФОРМАТ:
+- Чёткая структура (как в основном промпте)
+- Логически сгруппированные буллиты
+- Списки через "-"
+
+ФОРМАТ TELEGRAM:
+- Только:
+  *жирный*, _курсив_, `моноширинный`
+- Заголовки через *жирный*
+""",
+
     """
 ИНСТРУКЦИЯ ПО ДЕТАЛИЗАЦИИ: [МАКСИМАЛЬНО ПОДРОБНО]
-Сделай очень подробный анализ диалога. Сохрани все подтемы, аргументы, контраргументы, идеи, нюансы и эмоциональный фон. Ответ должен быть объёмным и исчерпывающим."""
+
+ЗАДАЧА:
+Сделать полный и детализированный анализ диалога.
+
+ТРЕБОВАНИЯ:
+- Сохранить:
+  - все значимые подтемы
+  - аргументы и контраргументы
+  - развитие дискуссии по шагам
+  - позиции участников
+  - изменения мнений (если есть)
+  - важные уточнения и нюансы
+- Передать структуру обсуждения (кто, что, в ответ на что)
+- Отразить эмоциональный фон (если он влияет на смысл)
+
+ДОПОЛНИТЕЛЬНО:
+- Можно группировать тезисы по подтемам
+- Можно выделять противоречия и согласия
+- Можно кратко пояснять неявные связи (ТОЛЬКО если они очевидны из текста)
+
+ОГРАНИЧЕНИЯ:
+- Не добавляй внешние знания
+- Не искажай формулировки
+- Не превращай ответ в поток текста — сохраняй структуру
+
+ФОРМАТ:
+- Строго следовать структуре основного промпта
+- Расширенные списки через "-"
+- Допускается вложенная логика (но без нумерации)
+
+ФОРМАТ TELEGRAM:
+- Только:
+  *жирный*, _курсив_, `моноширинный`
+- Заголовки через *жирный*
+"""
 ]
 
 class Character(BaseModel):
@@ -220,7 +380,37 @@ class LLM:
         return fetched
     
     @classmethod
-    def call_llm(cls, api_type, url, api_key, model, system_prompt, user_content):
+    def strip_reasoning(cls, text: str) -> str:
+        if not text:
+            return text
+
+        patterns = [
+            # базовые
+            r"<think.*?>.*?</think>",
+            r"<thought.*?>.*?</thought>",
+            r"<thinking.*?>.*?</thinking>",
+            r"<reasoning.*?>.*?</reasoning>",
+            r"<analysis.*?>.*?</analysis>",
+            r"<reflection.*?>.*?</reflection>",
+            r"<scratchpad.*?>.*?</scratchpad>",
+            r"<deliberation.*?>.*?</deliberation>",
+
+            # иногда встречаются кастомные
+            r"<internal.*?>.*?</internal>",
+            r"<chain[-_ ]?of[-_ ]?thought.*?>.*?</chain[-_ ]?of[-_ ]?thought>",
+            r"<cot.*?>.*?</cot>",
+            r"<hidden.*?>.*?</hidden>",
+            r"<private.*?>.*?</private>",
+        ]
+
+        cleaned = text
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+        return cleaned.strip()
+
+    @classmethod
+    def call_llm(cls, api_type, url, api_key, model, system_prompt, user_content, logger):
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -239,14 +429,15 @@ class LLM:
                 raise ValueError(f"{r.status_code} {' '.join(r.text.split())}")
             r.raise_for_status()
             data = r.json()
+            logger.debug(f"{data}")
             choices = data.get("choices", [])
             if choices:
                 msg = choices[0].get("message", {})
                 content = msg.get("content")
                 if isinstance(content, str):
-                    return content.strip()
+                    return cls.strip_reasoning(content.strip())
             if "text" in data and isinstance(data["text"], str):
-                return data["text"].strip()
+                return cls.strip_reasoning(data["text"].strip())
             raise RuntimeError("Пустой ответ от OpenAI-совместимого API")
 
         payload = {
@@ -257,62 +448,20 @@ class LLM:
             ],
             "stream": False
         }
-        r = requests.post(f"{url.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=120)
+        r = requests.post(f"{url.rstrip('/')}/chat", headers=headers, json=payload, timeout=120)
         r.raise_for_status()
         data = r.json()
+
         if isinstance(data.get("message"), dict):
             content = data["message"].get("content")
             if isinstance(content, str):
-                return content.strip()
+                return cls.strip_reasoning(content.strip())
         if isinstance(data.get("response"), str):
-            return data["response"].strip()
+            return cls.strip_reasoning(data["response"].strip())
         raise RuntimeError("Пустой ответ от Ollama API")
 
 
 class Plugin(BasePlugin):
-    def log_debug(self, text):
-        if LOG_LEVEL <= 0:
-            self.log(f"[DEBUG]\t{text}")
-            if LOGS_ENABLED:
-                logger.log(
-                    level='debug',
-                    message=text,
-                )
-                # self.set_setting("dev_logs", str(logger), reload_settings=True)
-
-
-    def log_info(self, text):
-        if LOG_LEVEL <= 1:
-            self.log(f"[INFO]\t{text}")
-            if LOGS_ENABLED:
-                logger.log(
-                    level='info',
-                    message=text,
-                )
-                # self.set_setting("dev_logs", str(logger), reload_settings=True)
-
-
-    def log_warn(self, text):
-        if LOG_LEVEL <= 2:
-            self.log(f"[WARN]\t{text}")
-            if LOGS_ENABLED:
-                logger.log(
-                    level='warn',
-                    message=text,
-                )
-                # self.set_setting("dev_logs", str(logger), reload_settings=True)
-            
-    
-    def log_error(self, text):
-        if LOG_LEVEL <= 3:
-            self.log(f"[ERROR]\t{text}")
-            if LOGS_ENABLED:
-                logger.log(
-                    level='error',
-                    message=text,
-                )
-                # self.set_setting("dev_logs", str(logger), reload_settings=True)
-
     # Методы UI
     def _get_alert_builder(self):
         from ui.alert import AlertDialogBuilder
@@ -403,19 +552,19 @@ class Plugin(BasePlugin):
                 bld.set_message(result_text)
                 bld.set_message_text_view_clickable(True)
                 
+                # Перенести в TelegramAPI
                 def on_send_chat(dialog, which):
                     logger.info("Отправка результата в текущий чат...")
                     try:
                         send_text(peer=dialog_id, text=result_text, account=account, parse_mode="Markdown")
-                        self._toast(fragment, "Отправлено в чат")
                     except Exception as e:
                         logger.error(f"[send chat] Ошибка отправки: {e}")
-                        self._toast(fragment, "Ошибка отправки в чат")
                     try:
                         dialog.dismiss()
                     except Exception:
                         pass
                 
+                # Перенести в TelegramAPI
                 def on_send_saved(dialog, which):
                     logger.info("Отправка результата в Избранное...")
                     try:
@@ -424,10 +573,10 @@ class Plugin(BasePlugin):
                         saved_id = UserConfig.getInstance(account).getClientUserId()
                         
                         send_text(peer=saved_id, text=result_text, account=account, parse_mode="Markdown")
-                        self._toast(fragment, "Отправлено в Избранное")
+                        # self._toast(fragment, "Отправлено в Избранное")
                     except Exception as e:
                         logger.error(f"[send saved] Ошибка: {e}")
-                        self._toast(fragment, "Ошибка отправки в Избранное")
+                        # self._toast(fragment, "Ошибка отправки в Избранное")
                     try:
                         dialog.dismiss()
                     except Exception:
@@ -439,26 +588,10 @@ class Plugin(BasePlugin):
                 bld.show()
             except Exception as e:
                 logger.error(f"[result dialog] Ошибка окна: {e}\n{traceback.format_exc()}")
-                self._toast(fragment, "Ошибка показа результата")
+                # self._toast(fragment, "Ошибка показа результата")
         run_on_ui_thread(_ui)
 
-    def _show_error_dialog(self, fragment, text):
-        logger.debug(f"Показ окна ошибки: {text[:50]}...")
-        def _ui():
-            try:
-                ctx = self._context_from_fragment(fragment)
-                if ctx is None:
-                    return
-                AlertDialogBuilder = self._get_alert_builder()
-                bld = AlertDialogBuilder(ctx)
-                bld.set_title("Ошибка")
-                bld.set_message(text)
-                bld.set_positive_button("OK", lambda dialog, which: dialog.dismiss())
-                bld.show()
-            except Exception as e:
-                logger.error(f"[error dialog] Ошибка показа: {e}")
-        run_on_ui_thread(_ui)
-
+    # Методы персонажей
     def fetch_characters(self, url: str):
         logger.info(f"Started fetching characters from {url}")
         headers = {"Accept": "application/json, text/plain, */*"}
@@ -488,7 +621,6 @@ class Plugin(BasePlugin):
         if not cached_characters:
             try:
                 char_url = str(self.get_setting("exp_chr_lnk", DEFAULT_CHARACTERS_URL))
-                # char_url = DEFAULT_CHARACTERS_URL
                 logger.info(f"Trying to fetch from: {char_url}")
                 fetched_characters = self.fetch_characters(
                     url=char_url
@@ -791,29 +923,31 @@ class Plugin(BasePlugin):
         return "\n".join(lines)
 
     def on_menu_click(self, ctx):
+        logger.debug(f"Menu button was called")
         message = ctx.get("message")
         dialog_id = ctx.get("dialog_id")
         account = ctx.get("account")
         fragment = ctx.get("fragment")
+        logger.debug(f"message={message} dialog_id={dialog_id} account={account} fragment={fragment}")
 
         selected_id = self.msg_id(message)
         spinner_ref = {"dialog": None}
         self._show_spinner(fragment, spinner_ref, "Анализирую историю…")
 
-
-        logger.debug(f"{message}\t{dialog_id}\t{account}\t{fragment}\t{selected_id}")
-        run_on_queue(lambda: self.process(account=account, dialog_id=dialog_id, selected_id=selected_id, fragment=fragment, spinner_ref=spinner_ref))
+        run_on_queue(lambda: self.process(account=account, dialog_id=dialog_id, selected_id=selected_id, fragment=fragment, spinner_ref=spinner_ref, logger=logger))
         # self.process(account=account, dialog_id=dialog_id, selected_id=selected_id, fragment=fragment, spinner_ref=spinner_ref)
 
-    def process(self, account, dialog_id, selected_id, fragment, spinner_ref):
+    def process(self, account, dialog_id, selected_id, fragment, spinner_ref, logger):
         try:
             # Проверяем ключ и ссылку на API
+            logger.debug("Checking for ai_api_url and ai_api_key")
             api_url = str(self.get_setting("ai_api_url", "")).strip()
             api_key = str(self.get_setting("ai_api_key", "")).strip()
             if not api_url:
                 raise ValueError("API URL not set! Check plugin settings")
             if not api_key:
                 raise ValueError("API Key not set! Check plugin settings")
+            logger.debug(f"ai_api_url={api_url} ai_api_key={api_key}")
             
             # Получаем модель
             cached_models = self.get_setting("ai_cache_mdls", [])
@@ -825,23 +959,28 @@ class Plugin(BasePlugin):
             mode = int(self.get_setting("req_mode", 0))
             detail_level = int(self.get_setting("req_lod", 1))
             character_index = int(self.get_setting("chrctr_idx", 0))
+            logger.debug(f"api_type={api_type} mode={mode} detail_level={detail_level} character_index={character_index}")
 
             characters = self.get_characters()
             if character_index < 0 or character_index >= len(characters):
                 character_index = 0
             character = characters[character_index]
+            logger.debug(f"character={str(character)[:50]}")
             
-            max_msgs = max(10, min(2000, int(str(self.get_setting("max_messages", DEFAULT_REQ_MAX_MSG)).strip())))
+            max_msgs = max(10, min(2000, int(str(self.get_setting("req_max_msg", DEFAULT_REQ_MAX_MSG)).strip())))
 
             sys_prompt = self.compile_sys_prompt(mode=mode, lod=detail_level, character=character)
+            logger.debug(f"sys_prompt={sys_prompt[:50]}")
 
             messages = self.collect_history(account=account, dialog_id=dialog_id, selected_id=selected_id, fragment=fragment, max_count=max_msgs)
             if not messages:
                 raise ValueError("Error while collecting messages. Please, try again later.")
+            logger.debug(f"messages={str(messages)[:50]}...")
+            transcripted = self.build_transcript(messages)
+            logger.debug(f"transcripted={transcripted[:50]}...")
             
             chat_type_ru, chat_title = self.get_chat_info(account, dialog_id)
-
-            transcripted = self.build_transcript(messages)
+            logger.debug(f"chat_type_ru={chat_type_ru} chat_title={chat_title}")
 
             context_block = f"КОНТЕКСТ ПЕРЕПИСКИ:\n- Источник: {chat_type_ru}\n- Название / Собеседник: {chat_title}\n\n--- ТЕКСТ СООБЩЕНИЙ ---\n"
 
@@ -861,8 +1000,10 @@ class Plugin(BasePlugin):
                 api_key=api_key,
                 model=model,
                 system_prompt=sys_prompt,
-                user_content=user_content
+                user_content=user_content,
+                logger=logger
             )
+            logger.debug(f"llm_result={llm_result[:50]}")
             self._dismiss_spinner(spinner_ref)
 
             self._show_result_dialog(fragment, account, dialog_id, llm_result)
@@ -941,8 +1082,8 @@ class Plugin(BasePlugin):
         ai_settings_list = [
             Header(text="Настройки API"),
             Selector(key="ai_api_type", text="Тип API", default=0, items=["OpenAI-совместимый", "Ollama Native API"]),
-            Input(key="ai_api_url", text="API URL", default="", subtext="OpenAI: http://.../v1/\nOllama Native: http://.../api/"),
-            Input(key="ai_api_key", text="API Key", default="", subtext="Токен для OpenAI/OpenWebUI. Для локальной Ollama оставьте пустым.")
+            Input(key="ai_api_url", text="API URL", default="http://192.168.50.88:8080/api", subtext="OpenAI: http://.../v1/\nOllama Native: http://.../api/"),
+            Input(key="ai_api_key", text="API Key", default="sk-b47fd1cdbd8d4e8c80a93edcec4e896d", subtext="Токен для OpenAI/OpenWebUI. Для локальной Ollama оставьте пустым.")
         ]
         logger.info("Getting models from cache...")
         cached_models = self.get_setting("ai_cache_mdls", [])
