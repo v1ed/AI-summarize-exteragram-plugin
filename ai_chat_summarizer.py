@@ -18,7 +18,7 @@ __id__ = "ai_chat_summarizer"
 __name__ = "AI Chat Summarizer & Fact Checker"
 __author__ = "@edward_vishnevsky"
 __version__ = "0.6.0"
-__description__ = "qweqweqweqweqweqweqweqweqwe qweqweqweqweqweqweqweqweqwe"
+__description__ = "Плагин для суммаризации и факт-чекинга с помощью ИИ.\nРепозиторий: https://github.com/v1ed/AI-summarize-exteragram-plugin"
 __requirements__ = ['pydantic==1.10.15', 'emoji']
 
 
