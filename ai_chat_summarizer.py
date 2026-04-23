@@ -52,7 +52,7 @@ BLOCK_HEIGHT_DP = 300
 LOGS_ENABLED = True
 DEFAULT_SYSTEM_PROMPTS_LINK = ""
 DEFAULT_REQ_MAX_MSG = 300
-DEFAULT_CHARACTERS_URL = "https://raw.githubusercontent.com/v1ed/AI-summarize-exteragram-plugin/rework/characters.json"
+DEFAULT_CHARACTERS_URL = "https://raw.githubusercontent.com/v1ed/AI-summarize-exteragram-plugin/main/characters.json"
 SUMMARY_FACTCHECK_PROMPT = """
 Ты — профессиональный аналитик текстовой переписки Telegram.
 
