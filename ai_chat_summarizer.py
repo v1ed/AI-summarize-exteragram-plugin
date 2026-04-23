@@ -784,11 +784,11 @@ class Plugin(BasePlugin):
         out = ""
         logger.debug(f"Using mode {mode}")
         if mode == 0:
-            out += SUMMARY_FACTCHECK_PROMPT
+            out += self.get_setting("exp_sys_sumfch", SUMMARY_FACTCHECK_PROMPT)
         elif mode == 1:
-            out += SUMMARY_PROMPT
+            out += self.get_setting("exp_sys_sum", SUMMARY_PROMPT)
         elif mode == 2:
-            out += FACTCHECK_PROMPT
+            out += self.get_setting("exp_sys_fch", FACTCHECK_PROMPT)
         else:
             raise ValueError("Mode should be in range 0-2")
         
@@ -1174,22 +1174,22 @@ class Plugin(BasePlugin):
     def create_settings(self):
         logger.debug("Building settings...")
         '''
-        cache:
+        cache: COMPLETE
             ai_cache_mdls:      list    
             chrctr_cache_list:  list
 
-        ai                      Настройки ИИ
+        ai                      Настройки ИИ    COMPLETE
             ai_api_type:    str     Тип API
             ai_api_url:     str     Ссылка на API
             ai_api_key:     str     Ключ доступа API
             ai_mdl_idx:     int     Индекс модели
         
-        req                     Настройки запроса
+        req                     Настройки запроса   COMPLETE
             req_lod:        int     Уровень детализации (0 - оч. кратко; 2 - оч. подробно)
             req_mode:       int     Режим работы (Сум. + ф-ч.; сум.; ф-ч.)
             req_max_msg:    int     Максимальное кол-во сообщений для сбора
         
-        chrctr                  Настройки персонажа
+        chrctr                  Настройки персонажа COMPLETE
             chrctr_idx:     int             Индекс персонажа
             chrctr_prompt:  Optional[str]   Промпт персонажа (Если выбран кастомный)
         
@@ -1201,7 +1201,7 @@ class Plugin(BasePlugin):
             exp_chr_lnk:    str     Ссылка на JSON с персонажами
             exp_dev_mode:   bool    Вкл./выкл. режим разработчика
 
-        dev                     Режим разработчика
+        dev                     Режим разработчика  COMPLETE
             dev_enabled:    bool    Включены параметры разработчика
             dev_log_lvl:    int     Уровень логов
             dev_logs:       toggle  Выгрузка логов
@@ -1210,7 +1210,6 @@ class Plugin(BasePlugin):
         '''
 
         # Настройки модели
-        # TODO: УДАЛИТЬ ТОКЕН И ССЫЛКУ!!!!
         logger.info("Building AI settings...")
         ai_settings_list = [
             Header(text="Настройки API"),
@@ -1300,7 +1299,7 @@ class Plugin(BasePlugin):
                 chrctr_settings_list.append(
                     EditText(
                         key="chrctr_prompt",
-                        hint="Свой персонаж: опишите стиль, лексику, настроение и манеру речи. Не более 512 символов",
+                        hint="Свой персонаж: опишите стиль, лексику, настроение и манеру речи. Не более 1024 символов",
                         default="",
                         multiline=True,
                         max_length=1024
@@ -1314,7 +1313,48 @@ class Plugin(BasePlugin):
         logger.info("Character settings builded successfully!")
 
         logger.info("Building experimental settings...")
-        exp_settings_list = []
+        exp_settings_list = [
+            Divider(text="Экспериментальные опции"),
+            Switch(key="exp_enabled", text="Включить экспериментальные опции", default=False)
+        ]
+        if self.get_setting("exp_enabled", False):
+            exp_settings_list += [
+            #     exp_sys_sumfch: str     Системный промпт суммаризации и факт-чекинга 
+            # exp_sys_sum:    str     Системный промпт суммаризации
+            # exp_sys_fch:    str     Системный промпт факт-чекинга
+            # exp_chr_lnk:    str     Ссылка на JSON с персонажами
+                Divider(text="Свой системный промпт для суммаризации и факт-чекинга"),
+                EditText(
+                    key="exp_sys_sumfch",
+                    hint="Свой системный промпт для суммаризации и факт-чекинга",
+                    default=SUMMARY_FACTCHECK_PROMPT,
+                    multiline=True,
+                    max_length=10000
+                ),
+                Divider(text="Свой системный промпт для суммаризации"),
+                EditText(
+                    key="exp_sys_sum",
+                    hint="Свой системный промпт для суммаризации",
+                    default=SUMMARY_PROMPT,
+                    multiline=True,
+                    max_length=10000
+                ),
+                Divider(text="Свой системный промпт для факт-чекинга"),
+                EditText(
+                    key="exp_sys_fch",
+                    hint="Свой системный промпт для факт-чекинга",
+                    default=FACTCHECK_PROMPT,
+                    multiline=True,
+                    max_length=10000
+                ),
+                Divider(text="Ссылка на JSON файл с персонажами"),
+                EditText(
+                    key="exp_chr_lnk",
+                    hint="Ссылка на JSON файл с персонажами",
+                    default=DEFAULT_CHARACTERS_URL,
+                )
+            ]
+
         logger.info("Experimental settings builded successfully!")
 
         dev_settings_list = [
@@ -1353,5 +1393,5 @@ class Plugin(BasePlugin):
                 ),
             )
 
-        settings_list = ai_settings_list + request_settings_list + chrctr_settings_list + dev_settings_list
+        settings_list = ai_settings_list + request_settings_list + chrctr_settings_list + exp_settings_list + dev_settings_list
         return settings_list
