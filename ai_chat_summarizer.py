@@ -17,7 +17,7 @@ import emoji as emojilib
 __id__ = "ai_chat_summarizer"
 __name__ = "AI Chat Summarizer & Fact Checker"
 __author__ = "@edward_vishnevsky"
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __description__ = "qweqweqweqweqweqweqweqweqwe qweqweqweqweqweqweqweqweqwe"
 __requirements__ = ['pydantic==1.10.15', 'emoji']
 
