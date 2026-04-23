@@ -48,10 +48,11 @@ LOGGING LEVELS
     DISABLED: -1
 '''
 LOG_LEVEL = 0
+BLOCK_HEIGHT_DP = 300
 LOGS_ENABLED = True
 DEFAULT_SYSTEM_PROMPTS_LINK = ""
 DEFAULT_REQ_MAX_MSG = 300
-DEFAULT_CHARACTERS_URL = "https://raw.githubusercontent.com/v1ed/AI-summarize-exteragram-plugin/main/characters.json"
+DEFAULT_CHARACTERS_URL = "https://raw.githubusercontent.com/v1ed/AI-summarize-exteragram-plugin/rework/characters.json"
 SUMMARY_FACTCHECK_PROMPT = """
 Ты — профессиональный аналитик текстовой переписки Telegram.
 
@@ -334,6 +335,7 @@ class Log:
     
     def clear(self):
         self.logs = []
+        self.debug(f"{len(self.logs)}")
     
     def get(self):
         return self.logs
@@ -463,6 +465,134 @@ class LLM:
 
 class Plugin(BasePlugin):
     # Методы UI
+    # ──────────────────────────────────────────────
+    # View builders
+    # ──────────────────────────────────────────────
+
+    def _build_scroll_container(self):
+        """Собирает FrameLayout(ScrollView(TextView)) с фиксированной высотой."""
+        from android.widget import FrameLayout, ScrollView
+        from android.view import ViewGroup
+        from org.telegram.messenger import AndroidUtilities, ApplicationLoader
+
+        ctx = ApplicationLoader.applicationContext
+
+        tv     = self._build_text_view(ctx)
+        scroll = self._build_scroll_view(ctx, tv)
+
+        self._log_text_view = tv
+
+        container = FrameLayout(ctx)
+        container.addView(
+            scroll,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                AndroidUtilities.dp(BLOCK_HEIGHT_DP),
+            )
+        )
+        return container
+
+    def _build_text_view(self, ctx):
+        """Создаёт readonly TextView с заданным текстом."""
+        from android.widget import TextView
+        from org.telegram.messenger import AndroidUtilities
+
+        tv = TextView(ctx)
+        tv.setText(str(logger))
+        tv.setTextSize(14)
+        tv.setPadding(
+            AndroidUtilities.dp(16),
+            AndroidUtilities.dp(12),
+            AndroidUtilities.dp(16),
+            AndroidUtilities.dp(12),
+        )
+        tv.setSingleLine(False)
+        tv.setMaxLines(1000)
+        tv.setFocusable(False)
+        tv.setFocusableInTouchMode(False)
+        tv.setClickable(False)
+        tv.setLongClickable(False)
+        tv.setCursorVisible(False)
+        return tv
+
+    def _build_scroll_view(self, ctx, child):
+        """Оборачивает child в ScrollView с правильным touch-листенером."""
+        from android.widget import ScrollView
+        from android.view import ViewGroup
+
+        scroll = ScrollView(ctx)
+        scroll.setFillViewport(True)
+        scroll.addView(
+            child,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        )
+        scroll.setOnTouchListener(self._make_touch_listener())
+        return scroll
+
+    # ──────────────────────────────────────────────
+    # Touch listener (fix nested scroll conflict)
+    # ──────────────────────────────────────────────
+
+    def _make_touch_listener(self):
+        """Возвращает OnTouchListener, который запрещает RecyclerView
+        перехватывать события пока палец внутри ScrollView."""
+        from android.view import MotionEvent, View
+        from java import dynamic_proxy
+
+        class ScrollTouchListener(dynamic_proxy(View.OnTouchListener)):
+            def onTouch(self, view, event):
+                action = event.getAction()
+                if action == MotionEvent.ACTION_DOWN or action == MotionEvent.ACTION_MOVE:
+                    view.getParent().requestDisallowInterceptTouchEvent(True)
+                elif action == MotionEvent.ACTION_UP or action == MotionEvent.ACTION_CANCEL:
+                    view.getParent().requestDisallowInterceptTouchEvent(False)
+                return False
+
+        return ScrollTouchListener()
+
+    # ──────────────────────────────────────────────
+    # Actions
+    # ──────────────────────────────────────────────
+
+    def _refresh_log_view(self):
+        """Обновляет текст в живом TextView на UI-потоке."""
+        if self._log_text_view is None:
+            return
+        try:
+            from org.telegram.messenger import AndroidUtilities
+            tv = self._log_text_view
+            new_text = str(logger)
+            # setText должен вызываться на главном UI-потоке
+            run_on_ui_thread(lambda: tv.setText(new_text))
+
+        except Exception as e:
+            logger.error(f"refresh FAIL: {e}")
+
+    def _on_clear_logs(self, view=None):
+        logger.clear()
+        self._refresh_log_view()
+        logger.info("logs cleared and view updated")
+    
+    def _on_log_level_change(self, view=None):
+        logger.set_log_level(int(self.get_setting('dev_log_lvl', LOG_LEVEL)))
+
+    def _copy_to_clipboard(self, view):
+        """Копирует DISPLAY_TEXT в системный буфер обмена."""
+        try:
+            from android.content import ClipData
+            from org.telegram.messenger import ApplicationLoader
+            from ui.bulletin import BulletinHelper
+
+            clipboard = ApplicationLoader.applicationContext.getSystemService("clipboard")
+            clipboard.setPrimaryClip(ClipData.newPlainText("plugin_text", str(logger)))
+            BulletinHelper.show_info("Скопировано в буфер обмена")
+            logger.debug("[ST] copied to clipboard OK")
+        except Exception as e:
+            logger.debug(f"[ST] clipboard FAIL: {e}")
+
     def _get_alert_builder(self):
         from ui.alert import AlertDialogBuilder
         return AlertDialogBuilder
@@ -1017,10 +1147,12 @@ class Plugin(BasePlugin):
     def on_plugin_load(self):
         logger.clear()
         logger.set_log_func(func=self.log)
-        logger.set_log_level(level=self.get_setting("dev_log_lvl", LOG_LEVEL))
+        logger.set_log_level(level=int(self.get_setting("dev_log_lvl", LOG_LEVEL)))
+        logger.error("-"*30)
         logger.info("Plugin loading started")
         logger.debug(f"len(logger.get())={len(logger.get())}")
         logger.debug("Logger setted!")
+        self._log_text_view = None
         # Проверить настройки
 
         # Подгрузить список персонажей
@@ -1073,7 +1205,8 @@ class Plugin(BasePlugin):
             dev_enabled:    bool    Включены параметры разработчика
             dev_log_lvl:    int     Уровень логов
             dev_logs:       toggle  Выгрузка логов
-            dev_clear:      toggle  Очистка логов
+            dev_logs_copy:  button  Копирование логов в буфер
+            dev_logs_clear: toggle  Очистка логов
         '''
 
         # Настройки модели
@@ -1082,8 +1215,8 @@ class Plugin(BasePlugin):
         ai_settings_list = [
             Header(text="Настройки API"),
             Selector(key="ai_api_type", text="Тип API", default=0, items=["OpenAI-совместимый", "Ollama Native API"]),
-            Input(key="ai_api_url", text="API URL", default="http://192.168.50.88:8080/api", subtext="OpenAI: http://.../v1/\nOllama Native: http://.../api/"),
-            Input(key="ai_api_key", text="API Key", default="sk-b47fd1cdbd8d4e8c80a93edcec4e896d", subtext="Токен для OpenAI/OpenWebUI. Для локальной Ollama оставьте пустым.")
+            Input(key="ai_api_url", text="API URL", default="", subtext="OpenAI: http://.../v1/\nOllama Native: http://.../api/"),
+            Input(key="ai_api_key", text="API Key", default="", subtext="Токен для OpenAI/OpenWebUI. Для локальной Ollama оставьте пустым.")
         ]
         logger.info("Getting models from cache...")
         cached_models = self.get_setting("ai_cache_mdls", [])
@@ -1190,7 +1323,35 @@ class Plugin(BasePlugin):
         ]
         if self.get_setting("dev_enabled", False):
             dev_settings_list.append(
-                Selector(key="dev_log_lvl", text="Уровень логов", default=LOG_LEVEL, items=["DEBUG", "INFO", "WARN", "ERROR"])
+                Selector(key="dev_log_lvl", text="Уровень логов", default=LOG_LEVEL, items=["DEBUG", "INFO", "WARN", "ERROR"], on_change=self._on_log_level_change)
             )
+        
+            try:
+                container = self._build_scroll_container()
+            except Exception as e:
+                logger.error(f"An error occured while building dev settings {e}")
+                logger.debug(traceback.format_exc())
+                dev_settings_list += [Header(text="Ошибка загрузки блока"), Divider()]
+
+            dev_settings_list += [
+                Custom(view=container),
+                Text(
+                    text="Копировать текст",
+                    icon="msg_copy",
+                    accent=True,
+                    on_click=self._copy_to_clipboard,
+                ),
+                Divider(),
+            ]
+
+            dev_settings_list.append(
+                Text(
+                    text="Очистить логи",
+                    icon="msg_cancel",
+                    red=True,
+                    on_click=self._on_clear_logs,
+                ),
+            )
+
         settings_list = ai_settings_list + request_settings_list + chrctr_settings_list + dev_settings_list
         return settings_list
